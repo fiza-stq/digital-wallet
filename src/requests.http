@@ -1,0 +1,321 @@
+### ============================================================
+### Digital Wallet — Manual API Tests
+### ============================================================
+
+@host = http://localhost:8080
+@email = fiza@example.com
+@phone = 9876543210
+@password = MyPass123
+
+### ------------------------------------------------------------
+### 7.6 Register new user (expect 201 Created)
+### ------------------------------------------------------------
+POST {{host}}/api/auth/register
+Content-Type: application/json
+
+{
+  "fullName": "Fiza Khan",
+  "email": "{{email}}",
+  "phoneNumber": "{{phone}}",
+  "password": "{{password}}"
+}
+
+
+### ------------------------------------------------------------
+### 7.7 Login (expect 200 OK) — also captures JWT into {{token}}
+### ------------------------------------------------------------
+# @name login
+POST {{host}}/api/auth/login
+Content-Type: application/json
+
+{
+  "email": "{{email}}",
+  "password": "{{password}}"
+}
+
+> {%
+    client.global.set("token", response.body.token);
+    client.log("JWT captured: " + response.body.token);
+%}
+
+
+### ------------------------------------------------------------
+### 7.8 Login with WRONG password (expect 401 Unauthorized)
+### ------------------------------------------------------------
+POST {{host}}/api/auth/login
+Content-Type: application/json
+
+{
+  "email": "{{email}}",
+  "password": "WrongPass999"
+}
+
+
+### ------------------------------------------------------------
+### 7.9 Register with DUPLICATE email (expect 409 Conflict)
+### ------------------------------------------------------------
+POST {{host}}/api/auth/register
+Content-Type: application/json
+
+{
+  "fullName": "Fiza Khan Again",
+  "email": "{{email}}",
+  "phoneNumber": "9876543299",
+  "password": "MyPass123"
+}
+
+
+### ------------------------------------------------------------
+### BONUS: Sanity check — hit a protected endpoint WITHOUT a token
+### (expect 401 Unauthorized, because /api/auth/** is public but
+###  anything else requires JWT — we'll add real endpoints in Step 8)
+### ------------------------------------------------------------
+GET {{host}}/api/wallets/me
+
+
+### ------------------------------------------------------------
+### BONUS: Sanity check — hit a protected endpoint WITH the JWT
+### (expect 404 for now — endpoint doesn't exist yet, but you'll see
+###  it passes Spring Security. Proof that JWT works.)
+### ------------------------------------------------------------
+GET {{host}}/api/wallets/me
+Authorization: Bearer {{token}}
+
+
+### ------------------------------------------------------------
+### EXTRA: Register with invalid data (expect 400 with field errors)
+### Tests the validation from Step 4 + global handler from Step 5
+### ------------------------------------------------------------
+POST {{host}}/api/auth/register
+Content-Type: application/json
+
+{
+  "fullName": "X",
+  "email": "not-an-email",
+  "phoneNumber": "abc",
+  "password": "short"
+}
+
+
+### ============================================================
+### STEP 8 — Wallet endpoints (protected)
+### ============================================================
+
+### 8.1 Get my wallet (expect 200, balance = 0)
+GET {{host}}/api/wallets/me
+Authorization: Bearer {{token}}
+
+
+### 8.2 Get my balance (expect 200)
+GET {{host}}/api/wallets/me/balance
+Authorization: Bearer {{token}}
+
+
+### 8.3 Top up 500 (expect 200, balance = 500)
+POST {{host}}/api/wallets/me/topup
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "amount": 500.00
+}
+
+
+### 8.4 Get my wallet again (expect balance = 500)
+GET {{host}}/api/wallets/me
+Authorization: Bearer {{token}}
+
+
+### 8.5 Top up with negative amount (expect 400)
+POST {{host}}/api/wallets/me/topup
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "amount": -10
+}
+
+
+### 8.6 Get my wallet without token (expect 401)
+GET {{host}}/api/wallets/me
+
+
+
+### ============================================================
+### STEP 9 — P2P Transfers
+### ============================================================
+
+### 9.0 Register second user (Bob)
+POST {{host}}/api/auth/register
+Content-Type: application/json
+
+{
+  "fullName": "Bob Kumar",
+  "email": "bob@example.com",
+  "phoneNumber": "9876500001",
+  "password": "BobPass123"
+}
+
+
+### 9.1 Login as Bob, capture second token
+# @name loginBob
+POST {{host}}/api/auth/login
+Content-Type: application/json
+
+{
+  "email": "bob@example.com",
+  "password": "BobPass123"
+}
+
+> {%
+    client.global.set("bobToken", response.body.token);
+    client.log("Bob JWT: " + response.body.token);
+%}
+
+
+### 9.2 Bob's wallet — copy the walletNumber from the response
+GET {{host}}/api/wallets/me
+Authorization: Bearer {{bobToken}}
+
+> {%
+    client.global.set("bobWallet", response.body.walletNumber);
+    client.log("Bob wallet number: " + response.body.walletNumber);
+%}
+
+
+### 9.3 (Log back in as Fiza to get fresh token for sender flow)
+# @name loginFiza
+POST {{host}}/api/auth/login
+Content-Type: application/json
+
+{
+  "email": "fiza@example.com",
+  "password": "MyPass123"
+}
+
+> {%
+    client.global.set("token", response.body.token);
+%}
+
+
+### 9.4 Top up Fiza's wallet to 1000 so she has funds
+POST {{host}}/api/wallets/me/topup
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "amount": 1000.00
+}
+
+
+### 9.5 Fiza transfers 250 to Bob (expect 200 + transaction)
+POST {{host}}/api/wallets/me/transfer
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "receiverWalletNumber": "{{bobWallet}}",
+  "amount": 250.00,
+  "description": "Dinner split",
+  "idempotencyKey": "fiza-to-bob-001"
+}
+
+
+### 9.6 Fiza tries the SAME transfer again with the SAME idempotency key
+### (expect 200 + same transaction, NOT a double-charge)
+POST {{host}}/api/wallets/me/transfer
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "receiverWalletNumber": "{{bobWallet}}",
+  "amount": 250.00,
+  "description": "Dinner split",
+  "idempotencyKey": "fiza-to-bob-001"
+}
+
+
+### 9.7 Fiza's balance (expect 1000 - 250 = 750, NOT 500)
+GET {{host}}/api/wallets/me/balance
+Authorization: Bearer {{token}}
+
+
+### 9.8 Bob's balance (expect 250)
+GET {{host}}/api/wallets/me/balance
+Authorization: Bearer {{bobToken}}
+
+
+### 9.9 Transfer more than balance (expect 400 Insufficient balance)
+POST {{host}}/api/wallets/me/transfer
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "receiverWalletNumber": "{{bobWallet}}",
+  "amount": 999999.00,
+  "description": "Too much"
+}
+
+
+### 9.10 Transfer to yourself (expect 400)
+POST {{host}}/api/wallets/me/transfer
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "receiverWalletNumber": "wrong-wallet-number",
+  "amount": 10.00
+}
+
+
+### ============================================================
+### STEP 10 — Transaction history
+### ============================================================
+
+### 10.1 Default — first page, last 30 days
+GET {{host}}/api/transactions/me
+Authorization: Bearer {{token}}
+
+
+### 10.2 Page size = 2
+GET {{host}}/api/transactions/me?page=0&size=2
+Authorization: Bearer {{token}}
+
+
+### 10.3 Second page
+GET {{host}}/api/transactions/me?page=1&size=2
+Authorization: Bearer {{token}}
+
+
+### 10.4 Filter by type = TRANSFER
+GET {{host}}/api/transactions/me?type=TRANSFER
+Authorization: Bearer {{token}}
+
+
+### 10.5 Filter by type = TOP_UP
+GET {{host}}/api/transactions/me?type=TOP_UP
+Authorization: Bearer {{token}}
+
+
+### 10.6 Filter by status = SUCCESS
+GET {{host}}/api/transactions/me?status=SUCCESS
+Authorization: Bearer {{token}}
+
+
+### 10.7 Filter by type AND status
+GET {{host}}/api/transactions/me?type=TRANSFER&status=SUCCESS
+Authorization: Bearer {{token}}
+
+
+### 10.8 Filter by date range (only today)
+GET {{host}}/api/transactions/me?from=2026-09-29T00:00:00&to=2026-09-29T23:59:59
+Authorization: Bearer {{token}}
+
+
+### 10.9 No token — expect 401
+GET {{host}}/api/transactions/me
+
+
+### 10.10 Bad enum value — expect 400
+GET {{host}}/api/transactions/me?type=NOT_A_TYPE
+Authorization: Bearer {{token}}
